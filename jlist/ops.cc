@@ -14,6 +14,18 @@ struct module_state {
 };
 
 namespace detail {
+jlist* new_jlist(PyObject* module) {
+    module_state* state = reinterpret_cast<module_state*>(PyModule_GetState(module));
+    jlist* out = PyObject_GC_New(jlist, state->jlist_type);
+    if (!out) {
+        return nullptr;
+    }
+    out->tag = entry_tag::as_int;
+    new (&out->entries) std::vector<entry>;
+
+    return out;
+}
+
 template<bool any, typename T>
 struct any_all;
 
@@ -335,13 +347,10 @@ PyObject* range(PyObject* module, PyObject* args) {
         return nullptr;
     }
 
-    module_state* state = reinterpret_cast<module_state*>(PyModule_GetState(module));
-    jlist* out = PyObject_GC_New(jlist, state->jlist_type);
+    jlist* out = detail::new_jlist(module);
     if (!out) {
         return nullptr;
     }
-    out->tag = entry_tag::as_int;
-    new (&out->entries) std::vector<entry>;
 
     auto compute_size =
         [&](Py_ssize_t low, Py_ssize_t high, Py_ssize_t step) -> Py_ssize_t {
@@ -372,11 +381,31 @@ PyObject* range(PyObject* module, PyObject* args) {
 
 PyMethodDef range_method = {"range", range, METH_VARARGS, range_doc};
 
+PyDoc_STRVAR(zeros_doc, "Returns a new jlist with the given size filled with zeros.");
+
+PyObject* zeros(PyObject* module, PyObject* size_ob) {
+    Py_ssize_t size = PyNumber_AsSsize_t(size_ob, PyExc_OverflowError);
+    if (size == -1 && PyErr_Occurred()) {
+        return nullptr;
+    }
+
+    jlist* out = detail::new_jlist(module);
+    if (!out) {
+        return nullptr;
+    }
+
+    out->entries.resize(size);
+    return reinterpret_cast<PyObject*>(out);
+}
+
+PyMethodDef zeros_method = {"zeros", zeros, METH_O, zeros_doc};
+
 PyMethodDef methods[] = {
     all_method,
     any_method,
     sum_method,
     range_method,
+    zeros_method,
     {nullptr, nullptr, 0, nullptr},
 };
 

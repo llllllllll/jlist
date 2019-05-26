@@ -1192,12 +1192,21 @@ PyObject* repeat(PyObject* _self, Py_ssize_t times) {
     }
     if (times > 0) {
         out->entries.reserve(self.size() * times);
-        for (Py_ssize_t ix = 0; ix < times; ++ix) {
-            out->entries.insert(out->entries.end(), self.entries.begin(), self.entries.end());
-            if (self.tag == entry_tag::as_ob) {
-                for (entry e : self.entries) {
+        if (self.tag == entry_tag::as_ob) {
+            for (entry e : self.entries) {
+                for (Py_ssize_t ix = 0; ix < times; ++ix) {
                     Py_INCREF(e.as_ob);
                 }
+            }
+        }
+        if (self.size() == 1) {
+            out->entries.insert(out->entries.end(), times, self.entries[0]);
+        }
+        else {
+            for (Py_ssize_t ix = 0; ix < times; ++ix) {
+                out->entries.insert(out->entries.end(),
+                                    self.entries.begin(),
+                                    self.entries.end());
             }
         }
     }
@@ -1282,15 +1291,17 @@ PyObject* inplace_repeat(PyObject* _self, Py_ssize_t times) {
     else {
         Py_ssize_t original_size = self.size();
         self.entries.reserve(original_size * times);
+        if (self.tag == entry_tag::as_ob) {
+            for (entry e : self.entries) {
+                for (Py_ssize_t ix = 0; ix < times; ++ix) {
+                    Py_INCREF(e.as_ob);
+                }
+            }
+        }
         for (Py_ssize_t ix = 1; ix < times; ++ix) {
             self.entries.insert(self.entries.end(),
                                 self.entries.begin(),
                                 self.entries.begin() + original_size);
-            if (self.tag == entry_tag::as_ob) {
-                for (Py_ssize_t ix = 0; ix < original_size; ++ix) {
-                    Py_INCREF(self.entries[ix].as_ob);
-                }
-            }
         }
     }
 
