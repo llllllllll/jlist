@@ -20,26 +20,26 @@ Unboxed Types
 the same array to store any of these values. The layout of a ``jlist`` is as
 follows:
 
-```c++
-enum class entry_tag : std::int8_t {
-    as_ob = 0,
-    as_int = 1,
-    as_double = 2,
-    unset = 3,
-};
+.. code-block:: C++
 
-union entry {
-    PyObject* as_ob;
-    std::int64_t as_int;
-    double as_double;
-};
+   enum class entry_tag : std::int8_t {
+       as_ob = 0,
+       as_int = 1,
+       as_double = 2,
+       unset = 3,
+   };
 
-struct jlist {
-    PyObject base;
-    entry_tag tag;
-    std::vector<entry> entries;
-};
-```
+   union entry {
+       PyObject* as_ob;
+       std::int64_t as_int;
+       double as_double;
+   };
+
+   struct jlist {
+       PyObject base;
+       entry_tag tag;
+       std::vector<entry> entries;
+   };
 
 The ``PyObject base`` member marks that we are a Python object. The ``tag``
 member holds a value that indicates what sort of data we are storing in the
@@ -59,30 +59,30 @@ Construction
 
 A ``jlist`` can be constructed from any Python iterable, just like ``list``.
 
-```Python
->>> import jlist as jl
->>> jlist([])
->>> jl.jlist([1, 2, 3])
-jlist([1, 2, 3])
->>> jl.jlist(range(6))
-jlist([0, 1, 2, 3, 4, 5])
-```
+.. code-block:: Python
+
+   >>> import jlist as jl
+   >>> jlist([])
+   >>> jl.jlist([1, 2, 3])
+   jlist([1, 2, 3])
+   >>> jl.jlist(range(6))
+   jlist([0, 1, 2, 3, 4, 5])
 
 ``jlist`` also has an optimized version of ``jl.jlist(range(...))`` which
 doesn't round trip through the Python iterator protocol:
 
-```Python
-In [1]: import jlist as jl
+.. code-block:: Python
 
-In [2]: %timeit jl.range(10000000)
-40.3 ms ± 183 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
+   In [1]: import jlist as jl
 
-In [3]: %timeit jl.jlist(range(10000000))
-981 ms ± 7.52 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
+   In [2]: %timeit jl.range(10000000)
+   40.3 ms ± 183 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
 
-In [4]: %timeit list(range(10000000))
-325 ms ± 2.34 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
-```
+   In [3]: %timeit jl.jlist(range(10000000))
+   981 ms ± 7.52 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
+
+   In [4]: %timeit list(range(10000000))
+   325 ms ± 2.34 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
 
 Operations
 ----------
@@ -90,13 +90,14 @@ Operations
 ``jlist`` also provides some optimized operations that can take advantage of the
 potentially unboxed values.
 
-```Python
-import jlist as jl
+.. code-block:: Python
 
-jl.sum
-jl.any
-jl.all
-```
+   import jlist as jl
+
+   jl.sum
+   jl.any
+   jl.all
+
 
 Note: ``jl.sum`` for integers guards against overflow and will switch to summing
 using Python ``int`` objects which have arbitrary precision.
