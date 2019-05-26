@@ -1,0 +1,40 @@
+*~
+
+# Mac OSX folder properties
+.DS_Store
+
+
+# test runner built with `make test`
+tests/run
+bench/run
+
+# doc artifacts
+html/*
+docs/doxygen-build/*
+docs/build/*
+
+# scratch file for testing linking
+scratch.cc
+a.out
+
+# compiled artifacts
+*.o
+*.a
+*.so*
+
+# gcc header dependencies
+*.d
+
+# coverage artifacts
+*.gcov
+*.gcno
+*.gcda
+
+# etags
+TAGS
+
+.gdb_history
+
+*.pyc
+
+venv/*

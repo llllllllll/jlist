@@ -1,0 +1,13 @@
+language: python
+sudo: false
+python:
+  - 3.6
+
+install:
+  - pip install etc/requirements-dev.txt
+
+script:
+  - nosetests jlist/
+
+notifications:
+  email: false
