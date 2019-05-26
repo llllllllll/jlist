@@ -75,20 +75,183 @@ doesn't round trip through the Python iterator protocol:
 
    In [1]: import jlist as jl
 
-   In [2]: %timeit jl.range(10000000)
+   In [2]: %timeit list(range(10000000))
+   337 ms ± 6.57 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
+
+   In [3]: %timeit jl.range(10000000)
    40.3 ms ± 183 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
 
-   In [3]: %timeit jl.jlist(range(10000000))
+   In [4]: %timeit jl.jlist(range(10000000))
    329 ms ± 2.98 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
 
-   In [4]: %timeit list(range(10000000))
-   337 ms ± 6.57 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
+There is also a helper for creating a list of all zero, which exists only as a
+convenience over ``jl.jlist([0]) * n``:
+
+.. code-block:: Python
+
+   In [1]: import jlist as jl
+
+   In [2]: %timeit jl.zeros(10000000)
+   35 ms ± 216 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
+
+   In [3]: %timeit jl.jlist([0]) * 10000000
+   33.4 ms ± 202 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
+
+   In [4]: %timeit [0] * 10000000
+   51.5 ms ± 487 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
+
 
 Operations
 ----------
 
-``jlist`` also provides some optimized operations that can take advantage of the
+``jlist`` also provides optimized operations that can take advantage of the
 potentially unboxed values.
+
+``jlist`` specific
+~~~~~~~~~~~~~~~~~~
+
+``jlist`` aims to be a replacement for ``list``; however, there are a few things
+that are not exactly the same.
+
+``tag``
+```````
+
+``jlist`` objects have an extra ``tag`` attribute which can be used to check
+what state (boxed or unboxed) it is in.
+
+
+.. code-block:: Python
+
+   In [1]: import jlist as jl
+
+   In [2]: jl.jlist().tag
+   Out[2]: 3
+
+   In [3]: jl.jlist([None]).tag
+   Out[3]: 0
+
+   In [4]: jl.jlist([0]).tag
+   Out[4]: 1
+
+   In [5]: jl.jlist([0.0]).tag
+   Out[5]: 2
+
+
+Identity
+````````
+
+Because ``jlist`` stores ``int`` and ``float`` unboxed, object identity is not
+preserved for these objects. This means that if you put an ``int`` in a
+``jlist``, the value you get back may be a different Python object with the same
+value. Given that ``int`` and ``float`` are immutable, this should likely not
+matter. The CPython test suite doesn't even test this property for ``list``.
+
+.. code-block:: Python
+
+   In [1]: import jlist as jl
+
+   In [2]: jlist = jl.jlist()
+
+   In [3]: value = 9001
+
+   In [4]: jlist.append(value)
+
+   In [5]: jlist[0] is value
+   Out[5]: False
+
+   In [6]: jlist[0] == value
+   Out[6]: True
+
+
+List Methods
+~~~~~~~~~~~~
+
+Slicing
+```````
+.. code-block:: Python
+
+   In [1]: import jlist as jl
+
+   In [2]: regular = list(jlist)
+
+   In [3]: %timeit regular[:100000 // 2]
+   145 µs ± 1.28 µs per loop (mean ± std. dev. of 7 runs, 10000 loops each)
+
+   In [4]: jlist = jl.jlist(regular)
+
+   In [5]: %timeit jlist[:100000 // 2]
+   14.3 µs ± 28.9 ns per loop (mean ± std. dev. of 7 runs, 100000 loops each)
+
+   In [6]: %timeit regular[::2]
+   310 µs ± 4.07 µs per loop (mean ± std. dev. of 7 runs, 1000 loops each)
+
+   In [7]: %timeit jlist[::2]
+   202 µs ± 1.23 µs per loop (mean ± std. dev. of 7 runs, 1000 loops each)
+
+Containment
+```````````
+.. code-block:: Python
+
+   In [1]: import jlist as jl
+
+   In [2]: regular = list(range(100000))
+
+   In [3]: -1 in regular
+   Out[3]: False
+
+   In [4]: %timeit -- -1 in regular
+   926 µs ± 10.4 µs per loop (mean ± std. dev. of 7 runs, 1000 loops each)
+
+   In [5]: jlist = jl.jlist(regular)
+
+   In [6]: %timeit -- -1 in jlist
+   34 µs ± 201 ns per loop (mean ± std. dev. of 7 runs, 10000 loops each)
+
+   In [7]: %timeit regular.index(100000 // 2)
+   540 µs ± 2.96 µs per loop (mean ± std. dev. of 7 runs, 1000 loops each)
+
+   In [8]: %timeit jlist.index(100000 // 2)
+   17.8 µs ± 775 ns per loop (mean ± std. dev. of 7 runs, 100000 loops each)
+
+Copy
+````
+
+.. code-block:: Python
+
+   In [1]: import jlist as jl
+
+   In [2]: regular = list(range(100000))
+
+   In [3]: %timeit regular.copy()
+   448 µs ± 60.5 µs per loop (mean ± std. dev. of 7 runs, 1000 loops each)
+
+   In [4]: jlist = jl.jlist(regular)
+
+   In [5]: %timeit jlist.copy()
+   29.9 µs ± 371 ns per loop (mean ± std. dev. of 7 runs, 10000 loops each)
+
+
+Sorting
+```````
+Note: we copy before sorting because ``sort()`` is in-place (just like list).
+
+.. code-block:: Python
+
+   In [1]: import jlist as jl; import random
+
+   In [2]: regular = [random.random() for _ in range(100000)]
+
+   In [3]: %timeit regular.copy().sort()
+   15.8 ms ± 236 µs per loop (mean ± std. dev. of 7 runs, 100 loops each)
+
+   In [4]: jlist = jl.jlist(regular)
+
+   In [5]: %timeit jlist.copy().sort()
+   6.88 ms ± 27 µs per loop (mean ± std. dev. of 7 runs, 100 loops each)
+
+
+Built-in Free Functions
+~~~~~~~~~~~~~~~~~~~~~~~
 
 .. code-block:: Python
 
