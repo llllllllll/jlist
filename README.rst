@@ -79,10 +79,10 @@ doesn't round trip through the Python iterator protocol:
    40.3 ms ± 183 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
 
    In [3]: %timeit jl.jlist(range(10000000))
-   981 ms ± 7.52 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
+   329 ms ± 2.98 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
 
    In [4]: %timeit list(range(10000000))
-   325 ms ± 2.34 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
+   337 ms ± 6.57 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
 
 Operations
 ----------
