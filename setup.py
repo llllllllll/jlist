@@ -13,11 +13,17 @@ cxxflags = [
     '-O' + optlevel,
 ]
 
-if optlevel == '0':
+if True or optlevel == '0':
     cxxflags.append('-g')
 
 if not os.environ.get('JLIST_ALL_COMPILE_ERRORS', False):
     cxxflags.append('-fmax-errors=15')
+
+ldflags = []
+
+if int(os.environ.get('JLIST_UBSAN', False)):
+    cxxflags.append('-fsanitize=undefined')
+    ldflags.append('-fsanitize=undefined')
 
 
 def extension(name, sources, depends=None):
@@ -27,6 +33,7 @@ def extension(name, sources, depends=None):
         include_dirs=['.'],
         language='c++',
         extra_compile_args=cxxflags,
+        extra_link_args=ldflags,
         depends=depends or [],
     )
 

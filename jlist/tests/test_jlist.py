@@ -11,17 +11,17 @@ class ListTest(list_tests.CommonTest):
     type2test = jl.jlist
 
     def test_basic(self):
-        self.assertEqual(list([]), [])
-        l0_3 = [0, 1, 2, 3]
-        l0_3_bis = list(l0_3)
+        self.assertEqual(self.type2test([]), self.type2test([]))
+        l0_3 = self.type2test([0, 1, 2, 3])
+        l0_3_bis = self.type2test(l0_3)
         self.assertEqual(l0_3, l0_3_bis)
         self.assertTrue(l0_3 is not l0_3_bis)
-        self.assertEqual(list(()), [])
-        self.assertEqual(list((0, 1, 2, 3)), [0, 1, 2, 3])
-        self.assertEqual(list(''), [])
-        self.assertEqual(list('spam'), ['s', 'p', 'a', 'm'])
-        self.assertEqual(list(x for x in range(10) if x % 2),
-                         [1, 3, 5, 7, 9])
+        self.assertEqual(self.type2test(()), self.type2test([]))
+        self.assertEqual(self.type2test((0, 1, 2, 3)), self.type2test([0, 1, 2, 3]))
+        self.assertEqual(self.type2test(''), self.type2test([]))
+        self.assertEqual(self.type2test('spam'), self.type2test(['s', 'p', 'a', 'm']))
+        self.assertEqual(self.type2test(x for x in range(10) if x % 2),
+                         self.type2test([1, 3, 5, 7, 9]))
 
         if sys.maxsize == 0x7fffffff:
             # This test can currently only work on 32-bit machines.
@@ -38,16 +38,16 @@ class ListTest(list_tests.CommonTest):
             # thread for the details:
 
             #     http://sources.redhat.com/ml/newlib/2002/msg00369.html
-            self.assertRaises(MemoryError, list, range(sys.maxsize // 2))
+            self.assertRaises(MemoryError, self.type2test, range(sys.maxsize // 2))
 
         # This code used to segfault in Py2.4a3
-        x = []
+        x = self.type2test()
         x.extend(-y for y in x)
-        self.assertEqual(x, [])
+        self.assertEqual(x, self.type2test([]))
 
     def test_keyword_args(self):
-        with self.assertRaisesRegex(TypeError, 'keyword argument'):
-            list(sequence=[])
+        with self.assertRaisesRegex(TypeError, 'keywords'):
+            jl.jlist(sequence=[])
 
     def test_truth(self):
         super().test_truth()

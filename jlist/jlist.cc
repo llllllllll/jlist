@@ -742,7 +742,7 @@ Py_ssize_t index_helper(jlist& self,
     switch (self.tag) {
     case entry_tag::as_ob:
         // the comparison can cause the list to resize
-        for (Py_ssize_t ix = start; start < stop && ix < self.size(); ++ix) {
+        for (Py_ssize_t ix = start; ix < stop && ix < self.size(); ++ix) {
             int r = PyObject_RichCompareBool(self.entries[ix].as_ob, value, Py_EQ);
             if (r < 0) {
                 return -2;
@@ -751,7 +751,7 @@ Py_ssize_t index_helper(jlist& self,
                 return ix;
             }
         }
-        break;
+        return -1;
     case entry_tag::as_int: {
         auto maybe_unboxed = maybe_unbox<std::int64_t>(value);
         if (!maybe_unboxed) {
@@ -766,7 +766,6 @@ Py_ssize_t index_helper(jlist& self,
             }
             return -1;
         }
-        break;
     }
     case entry_tag::as_double: {
         auto maybe_unboxed = maybe_unbox<double>(value);
@@ -782,7 +781,6 @@ Py_ssize_t index_helper(jlist& self,
             }
             return -1;
         }
-        break;
     }
     default:
         __builtin_unreachable();
@@ -794,7 +792,7 @@ Py_ssize_t index_helper(jlist& self,
 
 PyObject* index(PyObject* _self, PyObject* args) {
     jlist& self = *reinterpret_cast<jlist*>(_self);
-    PyObject* value;
+    PyObject* value = nullptr;
     Py_ssize_t start = 0;
     Py_ssize_t stop = self.size();
 
