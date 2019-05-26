@@ -92,12 +92,37 @@ potentially unboxed values.
 
 .. code-block:: Python
 
-   import jlist as jl
+   In [1]: import jlist as jl
 
-   jl.sum
-   jl.any
-   jl.all
+   In [2]: regular_list = list(range(10000000))
 
+   In [3]: %timeit sum(regular_list)
+   56.5 ms ± 351 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
+
+   In [4]: jlist = jl.jlist(regular_list)
+
+   In [5]: %timeit jl.sum(jlist)
+   6.43 ms ± 242 µs per loop (mean ± std. dev. of 7 runs, 100 loops each)
+
+   In [6]: regular_list = [0 for _ in range(10000000)]
+
+   In [7]: %timeit any(regular_list)
+   45.2 ms ± 231 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
+
+   In [8]: jlist = jl.jlist(regular_list)
+
+   In [9]: %timeit jl.any(jlist)
+   6.31 ms ± 42.7 µs per loop (mean ± std. dev. of 7 runs, 100 loops each)
+
+   In [10]: regular_list = [1 for _ in range(10000000)]
+
+   In [11]: %timeit all(regular_list)
+   40.5 ms ± 304 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
+
+   In [12]: jlist = jl.jlist(regular_list)
+
+   In [13]: %timeit jl.all(jlist)
+   6.26 ms ± 28.7 µs per loop (mean ± std. dev. of 7 runs, 100 loops each)
 
 Note: ``jl.sum`` for integers guards against overflow and will switch to summing
 using Python ``int`` objects which have arbitrary precision.
