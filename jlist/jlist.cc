@@ -1226,6 +1226,7 @@ PyObject* getitem(PyObject* _self, Py_ssize_t ix) {
 
     switch (self.tag) {
     case entry_tag::as_ob:
+        Py_INCREF(e.as_ob);
         return e.as_ob;
     case entry_tag::as_int:
         return box_value(e.as_int);
