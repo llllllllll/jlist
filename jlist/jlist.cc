@@ -348,7 +348,6 @@ int init(PyObject* _self, PyObject* args, PyObject* kwargs) {
 
     PyErr_SetString(PyExc_TypeError, "jlist accepts either 0 or 1 positional argument");
     return -1;
-
 }
 
 void deallocate(PyObject* _self) {
@@ -600,7 +599,7 @@ PyObject* richcompare(PyObject* _self, PyObject* _other, int cmp) {
             __builtin_unreachable();
         }
     case entry_tag::as_int:
-        switch(other.tag()) {
+        switch (other.tag()) {
         case entry_tag::as_homogeneous_ob:
         case entry_tag::as_heterogeneous_ob:
             return box_lhs_loop(std::int64_t{});
@@ -612,7 +611,7 @@ PyObject* richcompare(PyObject* _self, PyObject* _other, int cmp) {
             __builtin_unreachable();
         }
     case entry_tag::as_double:
-        switch(other.tag()) {
+        switch (other.tag()) {
         case entry_tag::as_homogeneous_ob:
         case entry_tag::as_heterogeneous_ob:
             return box_lhs_loop(double{});
@@ -1632,8 +1631,7 @@ int delete_slice(jlist& self,
             step = -step;
         }
 
-
-        switch(self.tag()) {
+        switch (self.tag()) {
         case entry_tag::as_homogeneous_ob:
         case entry_tag::as_heterogeneous_ob:
             delete_loop_ob(self, start, stop, step, slicelength);
@@ -1649,10 +1647,7 @@ int delete_slice(jlist& self,
     return 0;
 }
 
-void set_loop_ob(jlist& self,
-                 Py_ssize_t start,
-                 Py_ssize_t step,
-                 jlist& other) {
+void set_loop_ob(jlist& self, Py_ssize_t start, Py_ssize_t step, jlist& other) {
 
     std::vector<PyObject*> garbage(other.size());
 
@@ -1669,10 +1664,7 @@ void set_loop_ob(jlist& self,
     }
 }
 
-void set_loop_prim(jlist& self,
-                   Py_ssize_t start,
-                   Py_ssize_t step,
-                   jlist& other) {
+void set_loop_prim(jlist& self, Py_ssize_t start, Py_ssize_t step, jlist& other) {
     for (Py_ssize_t cur = start, ix = 0; ix < other.size(); cur += step, ix++) {
         entry ins = other.entries[ix];
         self.entries[cur] = ins;
@@ -1749,7 +1741,7 @@ int set_slice(jlist& self,
         return 0;
     }
 
-    switch(self.tag()) {
+    switch (self.tag()) {
     case entry_tag::as_homogeneous_ob:
     case entry_tag::as_heterogeneous_ob:
         set_loop_ob(self, start, step, *other);
@@ -1829,7 +1821,6 @@ int set_subscript(PyObject* _self, PyObject* item, PyObject* value) {
     }
 
     return detail::set_slice(self, start, step, slicelength, value);
-
 }
 
 PyMappingMethods as_mapping = {
@@ -1884,7 +1875,7 @@ int gc_clear(PyObject* _self) {
     detail::clear_helper(self);
     return 0;
 }
-}  // namespace detail
+}  // namespace methods
 
 namespace iterobject {
 struct jlist_iter {

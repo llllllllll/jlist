@@ -59,7 +59,7 @@ template<typename T>
 T& entry_value(entry& e) {
     static_assert_is_entry_type<T>();
 
-    if constexpr(std::is_same_v<T, PyObject*>) {
+    if constexpr (std::is_same_v<T, PyObject*>) {
         return e.as_ob;
     }
     else if constexpr (std::is_same_v<T, std::int64_t>) {
@@ -74,7 +74,7 @@ template<typename T>
 const T& entry_value(const entry& e) {
     static_assert_is_entry_type<T>();
 
-    if constexpr(std::is_same_v<T, PyObject*>) {
+    if constexpr (std::is_same_v<T, PyObject*>) {
         return e.as_ob;
     }
     else if constexpr (std::is_same_v<T, std::int64_t>) {
