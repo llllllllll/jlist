@@ -87,6 +87,9 @@ bool setitem_helper(jlist& self, entry& entry, PyObject* ob, bool clear) {
             if (box_values<T>(self)) {
                 return true;
             }
+            if (Py_TYPE(ob) != self.homogeneous_type_ptr()) {
+                self.tag(entry_tag::as_heterogeneous_ob);
+            }
             add_object();
             return false;
         }
@@ -553,11 +556,19 @@ PyObject* richcompare(PyObject* _self, PyObject* _other, int cmp) {
                 if (!result_ob) {
                     return nullptr;
                 }
-                int r = PyObject_IsTrue(result_ob);
-                Py_DECREF(result_ob);
-                if (r < 0) {
-                    return nullptr;
+                int r;
+                if (result_ob == Py_NotImplemented) {
+                    r = lhs == rhs;
                 }
+                else {
+                    r = PyObject_IsTrue(result_ob);
+                    if (r < 0) {
+                        Py_DECREF(result_ob);
+                        return nullptr;
+                    }
+                }
+                Py_DECREF(result_ob);
+
                 if (!r) {
                     return PyBool_FromLong(cmp == Py_NE);
                 }
@@ -824,11 +835,19 @@ Py_ssize_t index_helper(jlist& self,
                     if (!result_ob) {
                         return -2;
                     }
-                    int r = PyObject_IsTrue(result_ob);
-                    Py_DECREF(result_ob);
-                    if (r < 0) {
-                        return -2;
+                    int r;
+                    if (result_ob == Py_NotImplemented) {
+                        r = self.entries[ix].as_ob == value;
                     }
+                    else {
+                        r = PyObject_IsTrue(result_ob);
+                        if (r < 0) {
+                            Py_DECREF(result_ob);
+                            return -2;
+                        }
+                    }
+                    Py_DECREF(result_ob);
+
                     if (r) {
                         return ix;
                     }
@@ -1091,21 +1110,30 @@ bool sort_without_key(jlist& self) {
         switch (self.tag()) {
         case entry_tag::as_homogeneous_ob: {
             auto richcompare = self.homogeneous_type_ptr()->tp_richcompare;
-            if (!richcompare) {
+            auto unsupported = [&] {
                 PyErr_Format(
                     PyExc_TypeError,
                     "'<' not supported between instances of '%.200s' and '%.200s'",
                     self.homogeneous_type_ptr()->tp_name,
                     self.homogeneous_type_ptr()->tp_name);
+            };
+
+            if (!richcompare && self.size()) {
+                unsupported();
                 return true;
             }
             // Python builtin.list gives a stability contract here.
             std::stable_sort(self.entries.begin(),
                              self.entries.end(),
-                             [richcompare](entry a, entry b) {
+                             [richcompare, unsupported](entry a, entry b) {
                                  PyObject* result_ob =
                                      richcompare(a.as_ob, b.as_ob, Py_LT);
                                  if (!result_ob) {
+                                     throw std::runtime_error("bad compare");
+                                 }
+                                 if (result_ob == Py_NotImplemented) {
+                                     Py_DECREF(result_ob);
+                                     unsupported();
                                      throw std::runtime_error("bad compare");
                                  }
                                  int r = PyObject_IsTrue(result_ob);
