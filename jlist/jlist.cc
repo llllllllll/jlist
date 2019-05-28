@@ -38,14 +38,15 @@ bool box_values(jlist& list) {
         }
     }
 
-    list.set_tag(entry_tag::as_ob);
+    list.homogeneous_type_ptr(entry_pytype<UnboxedType>);
     return unwind;
 }
 
 bool maybe_box_values(jlist& list) {
-    switch (list.tag) {
+    switch (list.tag()) {
     case entry_tag::unset:
-    case entry_tag::as_ob:
+    case entry_tag::as_homogeneous_ob:
+    case entry_tag::as_heterogeneous_ob:
         return false;
     case entry_tag::as_int:
         return box_values<std::int64_t>(list);
@@ -96,10 +97,10 @@ bool setitem_helper(jlist& self, entry& entry, PyObject* ob, bool clear) {
     PyTypeObject* tp = Py_TYPE(ob);
     int overflow = 0;
 
-    switch (self.tag) {
+    switch (self.tag()) {
     case entry_tag::unset:
         if (tp == &PyFloat_Type) {
-            self.set_tag(entry_tag::as_double);
+            self.tag(entry_tag::as_double);
             entry.as_double = PyFloat_AsDouble(ob);
             return false;
         }
@@ -107,15 +108,20 @@ bool setitem_helper(jlist& self, entry& entry, PyObject* ob, bool clear) {
         if (tp == &PyLong_Type) {
             entry.as_int = PyLong_AsLongLongAndOverflow(ob, &overflow);
             if (!overflow) {
-                self.set_tag(entry_tag::as_int);
+                self.tag(entry_tag::as_int);
                 return false;
             }
         }
         // fallthrough
-        self.set_tag(entry_tag::as_ob);
+        self.homogeneous_type_ptr(tp);
         add_object();
         return false;
-    case entry_tag::as_ob:
+    case entry_tag::as_homogeneous_ob:
+        if (Py_TYPE(ob) != self.homogeneous_type_ptr()) {
+            self.tag(entry_tag::as_heterogeneous_ob);
+        }
+        [[fallthrough]];
+    case entry_tag::as_heterogeneous_ob:
         add_object();
         return false;
     case entry_tag::as_int:
@@ -159,19 +165,26 @@ bool extend_helper(jlist& self, jlist& other) {
         return false;
     }
 
-    if (self.tag == other.tag || self.tag == entry_tag::unset) {
+    if (self.tag() == other.tag() || self.tag() == entry_tag::unset) {
         // the types are the same, just use vector insert to add all the items
         self.entries.insert(self.entries.end(),
                             other.entries.begin(),
                             other.entries.end());
-        if (self.tag == entry_tag::as_ob) {
+        if (self.boxed()) {
             // the type is object, so we need to add a new reference to all the
             // items
             for (entry& e : other.entries) {
                 Py_INCREF(e.as_ob);
             }
         }
-        self.set_tag(other.tag);  // update in case `tag` was `unset`
+        if (self.tag() == entry_tag::as_homogeneous_ob &&
+            self.homogeneous_type_ptr() != other.homogeneous_type_ptr()) {
+            self.tag(entry_tag::as_homogeneous_ob);
+        }
+        else {
+            // update in case `tag` was `unset`
+            self.tag(other.tag());
+        }
         return false;
     }
 
@@ -181,8 +194,9 @@ bool extend_helper(jlist& self, jlist& other) {
         return true;
     }
 
-    switch (other.tag) {
-    case entry_tag::as_ob:
+    switch (other.tag()) {
+    case entry_tag::as_homogeneous_ob:
+    case entry_tag::as_heterogeneous_ob:
         return box_and_extend<PyObject*>(self, other);
     case entry_tag::as_int:
         return box_and_extend<std::int64_t>(self, other);
@@ -208,7 +222,7 @@ bool extend_fast_sequence(jlist& self, PyObject* other) {
                                    self.entries[base_size + ix],
                                    items[ix],
                                    false)) {
-            if (self.tag == entry_tag::as_ob) {
+            if (self.boxed()) {
                 for (Py_ssize_t unwind_ix = 0; unwind_ix < ix; ++unwind_ix) {
                     Py_DECREF(self.entries[unwind_ix].as_ob);
                 }
@@ -239,7 +253,7 @@ bool extend_iterable(jlist& self, PyObject* other) {
     while ((ob = PyIter_Next(it))) {
         entry& e = self.entries.emplace_back();
         if (detail::setitem_helper(self, e, ob, false)) {
-            if (self.tag == entry_tag::as_ob) {
+            if (self.boxed()) {
                 for (Py_ssize_t unwind_ix = 0; unwind_ix < ix; ++unwind_ix) {
                     Py_DECREF(self.entries[unwind_ix].as_ob);
                 }
@@ -271,14 +285,14 @@ jlist* new_jlist(entry_tag tag, I begin, I end) {
     if (!out) {
         return nullptr;
     }
-    out->tag = tag;
+    out->tag(tag);
     new (&out->entries) std::vector<entry>(begin, end);
-    if (tag == entry_tag::as_ob) {
+    if (is_object_tag(tag)) {
         for (entry e : out->entries) {
             Py_INCREF(e.as_ob);
         }
-        PyObject_GC_Track(out);
     }
+    PyObject_GC_Track(out);
     return out;
 }
 
@@ -287,16 +301,14 @@ jlist* new_jlist(entry_tag tag) {
     if (!out) {
         return nullptr;
     }
-    out->tag = tag;
+    out->tag(tag);
     new (&out->entries) std::vector<entry>;
-    if (tag == entry_tag::as_ob) {
-        PyObject_GC_Track(out);
-    }
+    PyObject_GC_Track(out);
     return out;
 }
 
 void clear_helper(jlist& self) {
-    if (self.tag == entry_tag::as_ob) {
+    if (self.boxed()) {
         for (entry e : self.entries) {
             Py_DECREF(e.as_ob);
         }
@@ -339,8 +351,8 @@ int init(PyObject* _self, PyObject* args, PyObject* kwargs) {
 void deallocate(PyObject* _self) {
     jlist& self = *reinterpret_cast<jlist*>(_self);
 
-    if (self.tag == entry_tag::as_ob) {
-        PyObject_GC_UnTrack(_self);
+    PyObject_GC_UnTrack(_self);
+    if (self.boxed()) {
         for (entry& e : self.entries) {
             Py_DECREF(e.as_ob);
         }
@@ -377,8 +389,9 @@ PyObject* repr(PyObject* _self) {
 
     Py_ssize_t ix = 0;
 
-    switch (self.tag) {
-    case entry_tag::as_ob:
+    switch (self.tag()) {
+    case entry_tag::as_homogeneous_ob:
+    case entry_tag::as_heterogeneous_ob:
         for (entry e : self.entries) {
             if (ix > 0) {
                 if (_PyUnicodeWriter_WriteASCIIString(&writer, ", ", 2) < 0) {
@@ -525,10 +538,37 @@ PyObject* richcompare(PyObject* _self, PyObject* _other, int cmp) {
         return PyBool_FromLong(cmp == Py_EQ);
     };
 
-    switch (self.tag) {
-    case entry_tag::as_ob:
-        switch (other.tag) {
-        case entry_tag::as_ob:
+    switch (self.tag()) {
+    case entry_tag::as_homogeneous_ob:
+        if (other.tag() == entry_tag::as_homogeneous_ob &&
+            self.homogeneous_type_ptr() == other.homogeneous_type_ptr()) {
+            auto richcompare = self.homogeneous_type_ptr()->tp_richcompare;
+            if (!richcompare) {
+                return PyBool_FromLong(self.size() == 0 && other.size() == 0);
+            }
+            for (Py_ssize_t ix = 0; ix < self.size(); ++ix) {
+                PyObject* lhs = self.entries[ix].as_ob;
+                PyObject* rhs = other.entries[ix].as_ob;
+                PyObject* result_ob = richcompare(lhs, rhs, Py_EQ);
+                if (!result_ob) {
+                    return nullptr;
+                }
+                int r = PyObject_IsTrue(result_ob);
+                Py_DECREF(result_ob);
+                if (r < 0) {
+                    return nullptr;
+                }
+                if (!r) {
+                    return PyBool_FromLong(cmp == Py_NE);
+                }
+            }
+            return PyBool_FromLong(cmp == Py_EQ);
+        }
+        [[fallthrough]];
+    case entry_tag::as_heterogeneous_ob:
+        switch (other.tag()) {
+        case entry_tag::as_homogeneous_ob:
+        case entry_tag::as_heterogeneous_ob:
             for (Py_ssize_t ix = 0; ix < self.size(); ++ix) {
                 PyObject* lhs = self.entries[ix].as_ob;
                 PyObject* rhs = other.entries[ix].as_ob;
@@ -549,8 +589,9 @@ PyObject* richcompare(PyObject* _self, PyObject* _other, int cmp) {
             __builtin_unreachable();
         }
     case entry_tag::as_int:
-        switch(other.tag) {
-        case entry_tag::as_ob:
+        switch(other.tag()) {
+        case entry_tag::as_homogeneous_ob:
+        case entry_tag::as_heterogeneous_ob:
             return box_lhs_loop(std::int64_t{});
         case entry_tag::as_int:
             return prim_loop(std::int64_t{}, std::int64_t{});
@@ -560,8 +601,9 @@ PyObject* richcompare(PyObject* _self, PyObject* _other, int cmp) {
             __builtin_unreachable();
         }
     case entry_tag::as_double:
-        switch(other.tag) {
-        case entry_tag::as_ob:
+        switch(other.tag()) {
+        case entry_tag::as_homogeneous_ob:
+        case entry_tag::as_heterogeneous_ob:
             return box_lhs_loop(double{});
         case entry_tag::as_int:
             return prim_loop(double{}, std::int64_t{});
@@ -631,8 +673,33 @@ PyObject* count(PyObject* _self, PyObject* value) {
         return false;
     };
 
-    switch (self.tag) {
-    case entry_tag::as_ob:
+    switch (self.tag()) {
+    case entry_tag::as_homogeneous_ob:
+        if (self.homogeneous_type_ptr() == Py_TYPE(value)) {
+            auto richcompare = self.homogeneous_type_ptr()->tp_richcompare;
+            if (!richcompare) {
+                for (entry e : self.entries) {
+                    count += e.as_ob == value;
+                }
+            }
+            else {
+                for (entry e : self.entries) {
+                    PyObject* result_ob = richcompare(e.as_ob, value, Py_EQ);
+                    if (!result_ob) {
+                        return nullptr;
+                    }
+                    int r = PyObject_IsTrue(result_ob);
+                    Py_DECREF(result_ob);
+                    if (r < 0) {
+                        return nullptr;
+                    }
+                    count += r;
+                }
+            }
+            break;
+        }
+        [[fallthrough]];
+    case entry_tag::as_heterogeneous_ob:
         for (entry e : self.entries) {
             int r = PyObject_RichCompareBool(e.as_ob, value, Py_EQ);
             if (r < 0) {
@@ -686,7 +753,7 @@ PyObject* copy(PyObject* _self, PyObject*) {
     jlist& self = *reinterpret_cast<jlist*>(_self);
 
     return reinterpret_cast<PyObject*>(
-        detail::new_jlist(self.tag, self.entries.begin(), self.entries.end()));
+        detail::new_jlist(self.tag(), self.entries.begin(), self.entries.end()));
 }
 
 PyMethodDef copy_method = {"copy", copy, METH_NOARGS, copy_doc};
@@ -739,8 +806,38 @@ Py_ssize_t index_helper(jlist& self,
         return -1;
     };
 
-    switch (self.tag) {
-    case entry_tag::as_ob:
+    switch (self.tag()) {
+    case entry_tag::as_homogeneous_ob:
+        if (self.homogeneous_type_ptr() == Py_TYPE(value)) {
+            auto richcompare = self.homogeneous_type_ptr()->tp_richcompare;
+            if (!richcompare) {
+                for (Py_ssize_t ix = start; ix < stop && ix < self.size(); ++ix) {
+                    if (self.entries[ix].as_ob == value) {
+                        return ix;
+                    }
+                }
+            }
+            else {
+                for (Py_ssize_t ix = start; ix < stop && ix < self.size(); ++ix) {
+                    PyObject* result_ob =
+                        richcompare(self.entries[ix].as_ob, value, Py_EQ);
+                    if (!result_ob) {
+                        return -2;
+                    }
+                    int r = PyObject_IsTrue(result_ob);
+                    Py_DECREF(result_ob);
+                    if (r < 0) {
+                        return -2;
+                    }
+                    if (r) {
+                        return ix;
+                    }
+                }
+            }
+            return -1;
+        }
+        [[fallthrough]];
+    case entry_tag::as_heterogeneous_ob:
         // the comparison can cause the list to resize
         for (Py_ssize_t ix = start; ix < stop && ix < self.size(); ++ix) {
             int r = PyObject_RichCompareBool(self.entries[ix].as_ob, value, Py_EQ);
@@ -932,8 +1029,9 @@ PyObject* pop(PyObject* _self, PyObject* args) {
     entry& e = *maybe_e;
 
     PyObject* out;
-    switch (self.tag) {
-    case entry_tag::as_ob:
+    switch (self.tag()) {
+    case entry_tag::as_homogeneous_ob:
+    case entry_tag::as_heterogeneous_ob:
         out = e.as_ob;
         break;
     case entry_tag::as_int:
@@ -965,7 +1063,7 @@ PyObject* remove(PyObject* _self, PyObject* value) {
         PyErr_SetString(PyExc_ValueError, "jlist.remove(x): x not in list");
         return nullptr;
     }
-    if (self.tag == entry_tag::as_ob) {
+    if (self.boxed()) {
         Py_DECREF(self.entries[ix].as_ob);
     }
     self.entries.erase(self.entries.begin() + ix);
@@ -990,8 +1088,36 @@ PyDoc_STRVAR(sort_doc, "Stable sort *IN PLACE*.");
 namespace detail {
 bool sort_without_key(jlist& self) {
     try {
-        switch (self.tag) {
-        case entry_tag::as_ob:
+        switch (self.tag()) {
+        case entry_tag::as_homogeneous_ob: {
+            auto richcompare = self.homogeneous_type_ptr()->tp_richcompare;
+            if (!richcompare) {
+                PyErr_Format(
+                    PyExc_TypeError,
+                    "'<' not supported between instances of '%.200s' and '%.200s'",
+                    self.homogeneous_type_ptr()->tp_name,
+                    self.homogeneous_type_ptr()->tp_name);
+                return true;
+            }
+            // Python builtin.list gives a stability contract here.
+            std::stable_sort(self.entries.begin(),
+                             self.entries.end(),
+                             [richcompare](entry a, entry b) {
+                                 PyObject* result_ob =
+                                     richcompare(a.as_ob, b.as_ob, Py_LT);
+                                 if (!result_ob) {
+                                     throw std::runtime_error("bad compare");
+                                 }
+                                 int r = PyObject_IsTrue(result_ob);
+                                 Py_DECREF(result_ob);
+                                 if (r < 0) {
+                                     throw std::runtime_error("bad compare");
+                                 }
+                                 return r;
+                             });
+            break;
+        }
+        case entry_tag::as_heterogeneous_ob:
             // Python builtin.list gives a stability contract here.
             std::stable_sort(self.entries.begin(),
                              self.entries.end(),
@@ -1065,8 +1191,9 @@ bool sort_with_key(jlist& self, PyObject* key) {
     };
 
     try {
-        switch (self.tag) {
-        case entry_tag::as_ob:
+        switch (self.tag()) {
+        case entry_tag::as_homogeneous_ob:
+        case entry_tag::as_heterogeneous_ob:
             // Python builtin.list gives a stability contract here.
             std::stable_sort(self.entries.begin(),
                              self.entries.end(),
@@ -1186,13 +1313,13 @@ PyObject* concat(PyObject* self, PyObject* ob) {
 PyObject* repeat(PyObject* _self, Py_ssize_t times) {
     jlist& self = *reinterpret_cast<jlist*>(_self);
 
-    jlist* out = detail::new_jlist(self.tag);
+    jlist* out = detail::new_jlist(self.tag());
     if (!out) {
         return nullptr;
     }
     if (times > 0) {
         out->entries.reserve(self.size() * times);
-        if (self.tag == entry_tag::as_ob) {
+        if (self.boxed()) {
             for (entry e : self.entries) {
                 for (Py_ssize_t ix = 0; ix < times; ++ix) {
                     Py_INCREF(e.as_ob);
@@ -1224,8 +1351,9 @@ PyObject* getitem(PyObject* _self, Py_ssize_t ix) {
     }
     const entry& e = *maybe_e;
 
-    switch (self.tag) {
-    case entry_tag::as_ob:
+    switch (self.tag()) {
+    case entry_tag::as_homogeneous_ob:
+    case entry_tag::as_heterogeneous_ob:
         Py_INCREF(e.as_ob);
         return e.as_ob;
     case entry_tag::as_int:
@@ -1250,7 +1378,7 @@ int setitem(PyObject* _self, Py_ssize_t ix, PyObject* ob) {
     }
 
     if (!ob) {
-        if (self.tag == entry_tag::as_ob) {
+        if (self.boxed()) {
             Py_DECREF(maybe_e->as_ob);
         }
         self.entries.erase(self.entries.begin() + ix);
@@ -1292,7 +1420,7 @@ PyObject* inplace_repeat(PyObject* _self, Py_ssize_t times) {
     else {
         Py_ssize_t original_size = self.size();
         self.entries.reserve(original_size * times);
-        if (self.tag == entry_tag::as_ob) {
+        if (self.boxed()) {
             for (entry e : self.entries) {
                 for (Py_ssize_t ix = 0; ix < times; ++ix) {
                     Py_INCREF(e.as_ob);
@@ -1357,12 +1485,12 @@ PyObject* subscript(PyObject* _self, PyObject* item) {
             start = stop;
         }
         return reinterpret_cast<PyObject*>(
-            detail::new_jlist(self.tag,
+            detail::new_jlist(self.tag(),
                               self.entries.begin() + start,
                               self.entries.begin() + stop));
     }
 
-    jlist* out = detail::new_jlist(self.tag);
+    jlist* out = detail::new_jlist(self.tag());
     if (!out) {
         return nullptr;
     }
@@ -1378,7 +1506,7 @@ PyObject* subscript(PyObject* _self, PyObject* item) {
             out->entries.emplace_back(self.entries[ix]);
         }
     }
-    if (out->tag == entry_tag::as_ob) {
+    if (out->boxed()) {
         for (entry e : out->entries) {
             Py_INCREF(e.as_ob);
         }
@@ -1463,7 +1591,7 @@ int delete_slice(jlist& self,
 
     if (step == 1) {
         self.entries.erase(self.entries.begin() + start, self.entries.begin() + stop);
-        if (self.tag == entry_tag::as_ob) {
+        if (self.boxed()) {
             for (Py_ssize_t ix = start; ix < stop; ix += stop) {
                 Py_DECREF(self.entries[ix].as_ob);
             }
@@ -1477,8 +1605,9 @@ int delete_slice(jlist& self,
         }
 
 
-        switch(self.tag) {
-        case entry_tag::as_ob:
+        switch(self.tag()) {
+        case entry_tag::as_homogeneous_ob:
+        case entry_tag::as_heterogeneous_ob:
             delete_loop_ob(self, start, stop, step, slicelength);
             break;
         case entry_tag::as_int:
@@ -1529,20 +1658,20 @@ int set_slice(jlist& self,
               jlist* other) {
 
     if (&self == other) {
-        other = new_jlist(self.tag, self.entries.begin(), self.entries.end());
+        other = new_jlist(self.tag(), self.entries.begin(), self.entries.end());
     }
     else if (self.size() == 0) {
-        self.set_tag(other->tag);
+        self.tag(other->tag());
     }
     else if (other->size() == 0 && slicelength == 0) {
         return 0;
     }
-    else if (self.tag != other->tag) {
+    else if (self.tag() != other->tag()) {
         if (maybe_box_values(self)) {
             return -1;
         }
-        if (other->tag != entry_tag::as_ob) {
-            other = new_jlist(self.tag, other->entries.begin(), other->entries.end());
+        if (!other->boxed()) {
+            other = new_jlist(self.tag(), other->entries.begin(), other->entries.end());
             if (!other || maybe_box_values(*other)) {
                 return -1;
             }
@@ -1557,7 +1686,7 @@ int set_slice(jlist& self,
 
     if (step == 1) {
         if (slicelength > other->size()) {
-            if (self.tag == entry_tag::as_ob) {
+            if (self.boxed()) {
                 for (Py_ssize_t ix = other->size(); ix < slicelength; ++ix) {
                     Py_DECREF(self.entries[ix].as_ob);
                 }
@@ -1569,7 +1698,7 @@ int set_slice(jlist& self,
             Py_ssize_t count = std::max(slicelength - self.size(),
                                         other->size() - slicelength);
             entry e;
-            if (self.tag == entry_tag::as_ob) {
+            if (self.boxed()) {
                 e.as_ob = Py_None;
                 for (Py_ssize_t ix = 0; ix < count; ++ix) {
                     Py_INCREF(Py_None);
@@ -1592,8 +1721,9 @@ int set_slice(jlist& self,
         return 0;
     }
 
-    switch(self.tag) {
-    case entry_tag::as_ob:
+    switch(self.tag()) {
+    case entry_tag::as_homogeneous_ob:
+    case entry_tag::as_heterogeneous_ob:
         set_loop_ob(self, start, step, *other);
         break;
     case entry_tag::as_int:
@@ -1682,15 +1812,36 @@ PyMappingMethods as_mapping = {
 
 PyDoc_STRVAR(tag_doc, "The type tag for the sequence.");
 
-PyMemberDef members[] = {
-    {const_cast<char*>("tag"), T_BYTE, offsetof(jlist, tag), READONLY, tag_doc},
+PyObject* get_tag(PyObject* _self, void*) {
+    jlist& self = *reinterpret_cast<jlist*>(_self);
+
+    switch (self.tag()) {
+    case entry_tag::as_homogeneous_ob:
+        return PyUnicode_FromString("homogeneous_ob");
+    case entry_tag::as_heterogeneous_ob:
+        return PyUnicode_FromString("heterogeneous_ob");
+    case entry_tag::as_int:
+        return PyUnicode_FromString("int");
+    case entry_tag::as_double:
+        return PyUnicode_FromString("double");
+    case entry_tag::unset:
+        return PyUnicode_FromString("unset");
+    default:
+        __builtin_unreachable();
+    }
+}
+
+PyGetSetDef tag_getset = {"tag", get_tag, nullptr, tag_doc, nullptr};
+
+PyGetSetDef getsets[] = {
+    tag_getset,
     {nullptr, 0, 0, 0, nullptr},
 };
 
 int traverse(PyObject* _self, visitproc visit, void* arg) {
     jlist& self = *reinterpret_cast<jlist*>(_self);
 
-    if (self.tag == entry_tag::as_ob) {
+    if (self.boxed()) {
         for (entry e : self.entries) {
             Py_VISIT(e.as_ob);
         }
@@ -1892,8 +2043,8 @@ PyTypeObject jlist_type = {
     methods::iter,                            // tp_iter
     0,                                        // tp_iternext
     methods::methods,                         // tp_methods,
-    methods::members,                         // tp_members
-    0,                                        // tp_getset
+    0,                                        // tp_members
+    methods::getsets,                         // tp_getset
     0,                                        // tp_base
     0,                                        // tp_dict
     0,                                        // tp_descr_get

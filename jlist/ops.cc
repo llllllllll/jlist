@@ -14,13 +14,13 @@ struct module_state {
 };
 
 namespace detail {
-jlist* new_jlist(PyObject* module) {
+jlist* new_jlist(PyObject* module, entry_tag tag) {
     module_state* state = reinterpret_cast<module_state*>(PyModule_GetState(module));
     jlist* out = PyObject_GC_New(jlist, state->jlist_type);
     if (!out) {
         return nullptr;
     }
-    out->tag = entry_tag::as_int;
+    out->tag(tag);
     new (&out->entries) std::vector<entry>;
 
     return out;
@@ -31,50 +31,100 @@ struct any_all;
 
 template<bool any>
 struct any_all<any, PyObject*> {
-    static int f(jlist& self) {
+private:
+    static constexpr bool all = !any;
+
+    template<typename F>
+    static int loop(F&& is_true, jlist& self) {
         for (entry e : self.entries) {
-            int r = PyObject_IsTrue(e.as_ob);
+            int r = is_true(e.as_ob);
             if (r < 0) {
                 return r;
             }
             if (any && r) {
                 return 1;
             }
-            if (!any && !r) {
+            if (all && !r) {
                 return 0;
             }
         }
+        return all;
+    }
+
+public:
+    static int heterogeneous(jlist& self) {
+        return loop(PyObject_IsTrue, self);
+    }
+
+    static int homogeneous(jlist& self) {
+        if (!self.size()) {
+            return 1;
+        }
+
+        PyTypeObject* tp = self.homogeneous_type_ptr();
+
+        if (tp == Py_TYPE(Py_True)) {
+            return loop([](PyObject* ob) { return ob == Py_True; }, self);
+        }
+        else if (tp == Py_TYPE(Py_None)) {
+            // is_true is just False for None
+            return 0;
+        }
+        else if (tp->tp_as_number &&
+                 tp->tp_as_number->nb_bool) {
+            return loop([nb_bool = tp->tp_as_number->nb_bool](
+                            PyObject* ob) { return nb_bool(ob); },
+                        self);
+        }
+        else if (tp->tp_as_mapping &&
+                 tp->tp_as_mapping->mp_length) {
+            return loop([mp_length = tp->tp_as_mapping->mp_length](
+                            PyObject* ob) { return mp_length(ob); },
+                        self);
+        }
+        else if (tp->tp_as_sequence &&
+                 tp->tp_as_sequence->sq_length) {
+            return loop([sq_length = tp->tp_as_sequence->sq_length](
+                            PyObject* ob) { return sq_length(ob); },
+                        self);
+        }
+
+        // is_true is just True for this type, so any or all is true
         return 1;
     }
 };
 
 template<bool any>
 struct any_all<any, std::int64_t> {
+    static constexpr bool all = !any;
+
     static int f(jlist& self) {
         for (entry e : self.entries) {
             if (any && e.as_int) {
                 return 1;
             }
-            if (!any && !e.as_int) {
+            if (all && !e.as_int) {
                 return 0;
             }
         }
-        return 1;
+        return all;
     }
 };
 
 template<bool any>
 struct any_all<any, double> {
+    static constexpr bool all = !any;
+
     static int f(jlist& self) {
         for (entry e : self.entries) {
             if (any && e.as_double) {
                 return 1;
             }
-            if (!any && !e.as_double) {
+            if (all && !e.as_double) {
                 return 0;
             }
         }
-        return 1;
+        return all;
     }
 };
 }  // namespace detail
@@ -97,9 +147,12 @@ PyObject* any_all(PyObject* module, PyObject* iterable) {
     }
 
     int out;
-    switch (self.tag) {
-    case entry_tag::as_ob:
-        out = detail::any_all<any, PyObject*>::f(self);
+    switch (self.tag()) {
+    case entry_tag::as_homogeneous_ob:
+        out = detail::any_all<any, PyObject*>::homogeneous(self);
+        break;
+    case entry_tag::as_heterogeneous_ob:
+        out = detail::any_all<any, PyObject*>::heterogeneous(self);
         break;
     case entry_tag::as_int:
         out = detail::any_all<any, std::int64_t>::f(self);
@@ -175,7 +228,45 @@ struct sum;
 
 template<>
 struct sum<PyObject*> {
-    static PyObject* f(jlist& self, PyObject* result) {
+private:
+    template<typename F>
+    static PyObject* homogeneous_loop(F&& add, jlist& self, PyObject* result) {
+        PyTypeObject* tp = self.homogeneous_type_ptr();
+        for (Py_ssize_t ix = 0; ix < self.size(); ++ix) {
+            PyObject* summand = add(self.entries[ix].as_ob, result);
+            Py_DECREF(result);
+            if (!summand) {
+                return nullptr;
+            }
+            if (__builtin_expect(Py_TYPE(summand) != tp, 0)) {
+                return boxing_sum<PyObject*>(self, summand, ix + 1);
+            }
+            result = summand;
+        }
+        return result;
+    }
+
+public:
+    static PyObject* homogeneous(jlist& self, PyObject* result) {
+        PyTypeObject* tp = self.homogeneous_type_ptr();
+        if (!result || tp != Py_TYPE(result)) {
+            return boxing_sum<PyObject*>(self, result);
+        }
+
+        if (tp->tp_as_number && tp->tp_as_number->nb_add) {
+            return homogeneous_loop(tp->tp_as_number->nb_add, self, result);
+        }
+        else if (tp->tp_as_sequence && tp->tp_as_sequence->sq_concat) {
+            return homogeneous_loop(tp->tp_as_sequence->sq_concat, self, result);
+        }
+
+        PyErr_Format(PyExc_TypeError,
+                     "unsupported operand type(s) for +: '%.200s' and '%.200s'",
+                     tp->tp_name,
+                     tp->tp_name);
+        return nullptr;
+    }
+    static PyObject* heterogeneous(jlist& self, PyObject* result) {
         return boxing_sum<PyObject*>(self, result);
     }
 };
@@ -265,9 +356,11 @@ PyObject* sum(PyObject* module, PyObject* args) {
         return start;
     }
 
-    switch (self.tag) {
-    case entry_tag::as_ob:
-        return detail::sum<PyObject*>::f(self, start);
+    switch (self.tag()) {
+    case entry_tag::as_homogeneous_ob:
+        return detail::sum<PyObject*>::homogeneous(self, start);
+    case entry_tag::as_heterogeneous_ob:
+        return detail::sum<PyObject*>::heterogeneous(self, start);
     case entry_tag::as_int:
         return detail::sum<std::int64_t>::f(self, start);
     case entry_tag::as_double:
@@ -347,7 +440,7 @@ PyObject* range(PyObject* module, PyObject* args) {
         return nullptr;
     }
 
-    jlist* out = detail::new_jlist(module);
+    jlist* out = detail::new_jlist(module, entry_tag::as_int);
     if (!out) {
         return nullptr;
     }
@@ -389,7 +482,7 @@ PyObject* zeros(PyObject* module, PyObject* size_ob) {
         return nullptr;
     }
 
-    jlist* out = detail::new_jlist(module);
+    jlist* out = detail::new_jlist(module, entry_tag::as_int);
     if (!out) {
         return nullptr;
     }

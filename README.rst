@@ -5,54 +5,61 @@ Your friend for homogeneous lists!
 
 ``jlist`` provides a new-drop in replacement for Python's ``list`` that provides
 optimizations for the case where the list holds exclusively ``int`` or
-``float``. While ``list`` *can* hold values of any type, almost all uses of
-lists are homogeneous sequences. ``jlist`` takes advantage of this by storing
-the data unboxed (as C data types) instead of Python objects when possible. To
-comply with the ``list`` interface, attempting to add a value of a different
-type to the list will cause it to box up all the existing members before adding
-the new one.
+``float``, or values of a single Python type (not including subclasses). While
+``list`` *can* hold values of any type, almost all uses of lists are homogeneous
+sequences. ``jlist`` takes advantage of this by storing the data unboxed (as C
+data types) instead of Python objects when possible. Also, by remembering the
+single homogeneous type, many operations can be sped up by reducing the amount
+of dispatching required. To comply with the ``list`` interface, attempting to
+add a value of a different type to the list will cause it to box up all the
+existing members  before adding the new one.
 
 Unboxed Types
 -------------
 
 ``jlist`` can store in an unboxed form the ``int64`` and ``double``. A
 ``PyObject*``, ``int64`` and ``double`` all occupy the same space so we can use
-the same array to store any of these values. The layout of a ``jlist`` is as
-follows:
+the same array to store any of these values.
 
-.. code-block:: C++
+Homogeneous ``PyObject*``
+-------------------------
 
-   enum class entry_tag : std::int8_t {
-       as_ob = 0,
-       as_int = 1,
-       as_double = 2,
-       unset = 3,
-   };
+If we know that all of the objects are of the exact same Python type, then we
+can do some optimizations by reducing the amount of virtual function table
+lookups. For example, consider the case of ``all`` or ``any``. ``bool(x)`` is
+defined in the C API as ``PyObject_IsTrue``, which looks like:
 
-   union entry {
-       PyObject* as_ob;
-       std::int64_t as_int;
-       double as_double;
-   };
+.. code-block:: C
 
-   struct jlist {
-       PyObject base;
-       entry_tag tag;
-       std::vector<entry> entries;
-   };
+   int
+   PyObject_IsTrue(PyObject *v)
+   {
+       Py_ssize_t res;
+       if (v == Py_True)
+           return 1;
+       if (v == Py_False)
+           return 0;
+       if (v == Py_None)
+           return 0;
+       else if (v->ob_type->tp_as_number != NULL &&
+                v->ob_type->tp_as_number->nb_bool != NULL)
+           res = (*v->ob_type->tp_as_number->nb_bool)(v);
+       else if (v->ob_type->tp_as_mapping != NULL &&
+                v->ob_type->tp_as_mapping->mp_length != NULL)
+           res = (*v->ob_type->tp_as_mapping->mp_length)(v);
+       else if (v->ob_type->tp_as_sequence != NULL &&
+                v->ob_type->tp_as_sequence->sq_length != NULL)
+           res = (*v->ob_type->tp_as_sequence->sq_length)(v);
+       else
+           return 1;
+       /* if it is negative, it should be either -1 or -2 */
+       return (res > 0) ? 1 : Py_SAFE_DOWNCAST(res, Py_ssize_t, int);
+   }
 
-The ``PyObject base`` member marks that we are a Python object. The ``tag``
-member holds a value that indicates what sort of data we are storing in the
-entries. ``entries`` is a vector that holds either ``int64``, ``double`` or
-``PyObject*`` values depending on ``tag``.
-
-``entry_tag::unset`` is a special tag that says that the ``jlist`` should infer
-the type from the first value added to it. This is the tag for a newly
-constructed ``jlist``. For ``tag`` to be ``entry_tag::unset``, the ``jlist``
-must be empty; however, if you ``clear()`` an existing ``jlist``, you can get an
-empty ``jlist`` with a different tag. ``clear()`` doesn't reset the tag because
-if you are explicitly clearing, you may still just be storing a single type in
-the list and we want future inserts to be fast.
+There is a lot of checking to see how truthiness is defined for the given
+type. If we know that the list holds only a single type, we can look up the
+proper method for determining truthiness just once, which can be a dramatic
+performance improvement.
 
 Construction
 ------------
@@ -117,24 +124,27 @@ that are not exactly the same.
 ```````
 
 ``jlist`` objects have an extra ``tag`` attribute which can be used to check
-what state (boxed or unboxed) it is in.
-
+what state it is in.
 
 .. code-block:: Python
 
    In [1]: import jlist as jl
 
    In [2]: jl.jlist().tag
-   Out[2]: 3
+   Out[2]: 'unset'
 
-   In [3]: jl.jlist([None]).tag
-   Out[3]: 0
+   In [3]: jl.jlist([0]).tag
+   Out[3]: 'int'
 
-   In [4]: jl.jlist([0]).tag
-   Out[4]: 1
+   In [4]: jl.jlist([0.5]).tag
+   Out[4]: 'double'
 
-   In [5]: jl.jlist([0.0]).tag
-   Out[5]: 2
+   In [5]: jl.jlist(['a']).tag
+   Out[5]: 'homogeneous_ob'
+
+   In [6]: jl.jlist(['a', None]).tag
+   Out[6]: 'heterogeneous_ob'
+
 
 
 Identity
@@ -212,6 +222,28 @@ Containment
 
    In [8]: %timeit jlist.index(100000 // 2)
    17.8 µs ± 775 ns per loop (mean ± std. dev. of 7 runs, 100000 loops each)
+
+   In [9]: import string; random
+
+   In [10]: regular_list = [
+       ...:     ''.join(map(
+       ...:         chr, (
+       ...:         random.randint(ord('a'), ord('z'))
+       ...:         for _ in range(random.randint(3, 10)))
+       ...:     ))
+       ...:     for _ in range(100000)
+       ...: ]
+
+   In [11]: search = 'a' * 10  # not in the sequence
+
+   In [12]: %timeit search in regular_list
+   1.3 ms ± 10.9 µs per loop (mean ± std. dev. of 7 runs, 1000 loops each)
+
+   In [13]: jlist = jl.jlist(regular_list)
+
+   In [14]: %timeit search in jlist
+   905 µs ± 16.1 µs per loop (mean ± std. dev. of 7 runs, 1000 loops each)
+
 
 Copy
 ````
