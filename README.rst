@@ -14,6 +14,9 @@ of dispatching required. To comply with the ``list`` interface, attempting to
 add a value of a different type to the list will cause it to box up all the
 existing members  before adding the new one.
 
+``jlist`` can be made to replace Python's builtin ``list`` object, either in
+particular function or globally. See patching_ for more information.
+
 Unboxed Types
 -------------
 
@@ -321,3 +324,62 @@ Built-in Free Functions
 
 Note: ``jl.sum`` for integers guards against overflow and will switch to summing
 using Python ``int`` objects which have arbitrary precision.
+
+.. _patching:
+
+Patching
+--------
+
+``jlist`` can be made to replace Python's builtin ``list`` object, either in
+particular function or globally. This behavior depends on the `codetransformer
+<https://github.com/llllllllll/codetransformer>`_, and is not installed nor
+enabled by default.
+
+To make ``jlist`` replace ``list`` literals in a particular function,
+``jlist.overloaded_literals`` may be used as a function decorator:
+
+.. code-block:: Python
+
+   import jlist as jl
+
+
+   @jl.overloaded_literals
+   def f():
+       return [1, 2, 3]
+
+   print(f())  # jlist([1, 2, 3])
+
+
+Overloaded literals also supports list comprehensions:
+
+.. code-block:: Python
+
+   import jlist as jl
+
+   @jl.overloaded_literals
+   def f():
+       return [x * 2 for x in range(5)]
+
+   print(f())  # jlist([0, 2, 4, 6, 8])
+
+
+To replace ``list`` literals with ``jlist`` literals in the entire process, you
+may use: ``jlist.patch_literals``.
+
+.. warning::
+
+   This might have strange side-effects. While we would like to be a total drop
+   in replacement, some code may actually require a ``builtins.list``
+   object. This is especially true for code that calls into C extension modules,
+   including Cython.
+
+``jlist.patch_literals`` does not change ``builtins.list`` to be
+``jlist.jlist``. This allows you to still check against a real list. If you
+would like to replace ``builtins.list`` with ``jlist.jlist``, which will make the
+name ``list`` resolve to ``jlist.jlist``, you may use ``jlist.patch_builtins``.
+``jlist.patch_builtins`` will also replace the builtin free functions like
+``any`` and ``all`` with their ``jlist`` equivalents. The ``jlist`` versions
+fall back to the builtins if the input is not a ``jlist.jlist``.
+
+``jlist.patch_all`` is a helper that calls both ``jlist.patch_literals`` and
+``jlist.patch_builtins``.
