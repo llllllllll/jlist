@@ -147,15 +147,28 @@ entry* get_entry(jlist& self, Py_ssize_t ix) {
 template<typename T>
 bool box_and_extend(jlist& self, jlist& other) {
     std::size_t original_size = self.entries.size();
+    self.entries.resize(original_size + other.size());
+
+    Py_ssize_t ix = 0;
+    auto unwind = [&] {
+        for (std::size_t ix = original_size; ix < self.entries.size(); ++ix) {
+            Py_DECREF(self.entries[ix].as_ob);
+        }
+        self.entries.erase(self.entries.begin() + original_size, self.entries.end());
+        return true;
+    };
+
     for (entry& e : other.entries) {
         PyObject* boxed = box_value(entry_value<T>(e));
 
         if (!boxed) {
-            for (std::size_t ix = original_size; ix < self.entries.size(); ++ix) {
-                Py_DECREF(self.entries[ix].as_ob);
-            }
-            self.entries.erase(self.entries.begin() + original_size, self.entries.end());
-            return true;
+            return unwind();
+        }
+
+        bool err = detail::setitem_helper(self, self.entries[original_size + ix++], boxed, false);
+        Py_DECREF(boxed);
+        if (err) {
+            return unwind();
         }
     }
 
@@ -180,9 +193,10 @@ bool extend_helper(jlist& self, jlist& other) {
                 Py_INCREF(e.as_ob);
             }
         }
-        if (self.tag() == entry_tag::as_homogeneous_ob &&
-            self.homogeneous_type_ptr() != other.homogeneous_type_ptr()) {
-            self.tag(entry_tag::as_homogeneous_ob);
+        if (self.tag() == entry_tag::as_homogeneous_ob) {
+            if (self.homogeneous_type_ptr() != other.homogeneous_type_ptr()) {
+                self.tag(entry_tag::as_heterogeneous_ob);
+            }
         }
         else {
             // update in case `tag` was `unset`
@@ -216,20 +230,22 @@ bool extend_fast_sequence(jlist& self, PyObject* other) {
         // don't do anything if the sequence is empty
         return false;
     }
-    Py_ssize_t base_size = self.size();
-    self.entries.resize(base_size + size);
+
+    std::size_t original_size = self.entries.size();
+    self.entries.resize(original_size + size);
 
     PyObject** items = PySequence_Fast_ITEMS(other);
     for (Py_ssize_t ix = 0; ix < size; ++ix) {
         if (detail::setitem_helper(self,
-                                   self.entries[base_size + ix],
+                                   self.entries[original_size + ix],
                                    items[ix],
                                    false)) {
             if (self.boxed()) {
-                for (Py_ssize_t unwind_ix = 0; unwind_ix < ix; ++unwind_ix) {
-                    Py_DECREF(self.entries[unwind_ix].as_ob);
+                for (std::size_t ix = original_size; ix < self.entries.size(); ++ix) {
+                    Py_DECREF(self.entries[ix].as_ob);
                 }
             }
+            self.entries.erase(self.entries.begin() + original_size, self.entries.end());
             return true;
         }
     }
@@ -255,12 +271,15 @@ bool extend_iterable(jlist& self, PyObject* other) {
     PyObject* ob;
     while ((ob = PyIter_Next(it))) {
         entry& e = self.entries.emplace_back();
-        if (detail::setitem_helper(self, e, ob, false)) {
+        bool err = detail::setitem_helper(self, e, ob, false);
+        Py_DECREF(ob);
+        if (err) {
             if (self.boxed()) {
                 for (Py_ssize_t unwind_ix = 0; unwind_ix < ix; ++unwind_ix) {
                     Py_DECREF(self.entries[unwind_ix].as_ob);
                 }
             }
+            Py_DECREF(it);
             return true;
         }
         ++ix;
@@ -283,8 +302,8 @@ bool extend_helper(jlist& self, PyObject* other) {
 }
 
 template<typename I>
-jlist* new_jlist(entry_tag tag, I begin, I end) {
-    jlist* out = PyObject_GC_New(jlist, &jlist_type);
+jlist* new_jlist(entry_tag tag, I begin, I end, PyTypeObject* cls = &jlist_type) {
+    jlist* out = PyObject_GC_New(jlist, cls);
     if (!out) {
         return nullptr;
     }
@@ -299,13 +318,13 @@ jlist* new_jlist(entry_tag tag, I begin, I end) {
     return out;
 }
 
-jlist* new_jlist(entry_tag tag) {
-    jlist* out = PyObject_GC_New(jlist, &jlist_type);
+jlist* new_jlist(entry_tag tag, PyTypeObject* cls = &jlist_type) {
+    jlist* out = PyObject_GC_New(jlist, cls);
     if (!out) {
         return nullptr;
     }
     out->tag(tag);
-    new (&out->entries) std::vector<entry>;
+    new (&out->entries) std::vector<entry>();
     PyObject_GC_Track(out);
     return out;
 }
@@ -320,8 +339,8 @@ void clear_helper(jlist& self) {
 }
 }  // namespace detail
 
-PyObject* new_(PyTypeObject*, PyObject*, PyObject*) {
-    return reinterpret_cast<PyObject*>(detail::new_jlist(entry_tag::unset));
+PyObject* new_(PyTypeObject* cls, PyObject*, PyObject*) {
+    return reinterpret_cast<PyObject*>(detail::new_jlist(entry_tag::unset, cls));
 }
 
 int init(PyObject* _self, PyObject* args, PyObject* kwargs) {
@@ -363,6 +382,58 @@ void deallocate(PyObject* _self) {
     self.entries.~vector();
     PyObject_GC_Del(_self);
 }
+
+PyDoc_STRVAR(_from_starargs_doc,
+             "Create a jlist from *args. This is used to efficiently implement jlist "
+             "literal construction when patching list literals.");
+
+PyObject* _from_starargs(PyObject* _cls, PyObject** args, int nargs, PyObject*) {
+    PyTypeObject* cls = reinterpret_cast<PyTypeObject*>(_cls);
+
+    jlist* self = detail::new_jlist(entry_tag::unset, cls);
+    if (!self) {
+        return nullptr;
+    }
+
+    self->entries.resize(nargs);
+    for (Py_ssize_t ix = 0; ix < nargs; ++ix) {
+        if (detail::setitem_helper(*self,
+                                   self->entries[ix],
+                                   args[ix],
+                                   false)) {
+            if (self->boxed()) {
+                for (Py_ssize_t unwind_ix = 0; unwind_ix < ix; ++unwind_ix) {
+                    Py_DECREF(self->entries[unwind_ix].as_ob);
+                }
+            }
+            self->entries.clear();
+            Py_DECREF(self);
+            return nullptr;
+        }
+    }
+    return reinterpret_cast<PyObject*>(self);
+}
+
+PyMethodDef _from_starargs_method = {"_from_starargs",
+                                     unsafe_cast_to_pycfunction(_from_starargs),
+                                     METH_FASTCALL | METH_CLASS,
+                                     _from_starargs_doc};
+
+PyDoc_STRVAR(_reserve_doc,
+             "Reserve space for elements. Does not change the length of the jlist.");
+
+PyObject* _reserve(PyObject* _self, PyObject* size_ob) {
+    jlist& self = *reinterpret_cast<jlist*>(_self);
+
+    Py_ssize_t size = PyNumber_AsSsize_t(size_ob, PyExc_OverflowError);
+    if (size == -1) {
+        return nullptr;
+    }
+    self.entries.reserve(size);
+    Py_RETURN_NONE;
+}
+
+PyMethodDef _reserve_method = {"_reserve", _reserve, METH_O, _reserve_doc};
 
 PyObject* repr(PyObject* _self) {
     Py_ssize_t rc = Py_ReprEnter(_self);
@@ -905,11 +976,16 @@ Py_ssize_t index_helper(jlist& self,
 }
 }  // namespace detail
 
-PyObject* index(PyObject* _self, PyObject* args) {
+PyObject* index(PyObject* _self, PyObject** args, int nargs, PyObject* kwargs) {
     jlist& self = *reinterpret_cast<jlist*>(_self);
     PyObject* value = nullptr;
     Py_ssize_t start = 0;
     Py_ssize_t stop = self.size();
+
+    if (kwargs && PyDict_Size(kwargs)) {
+        PyErr_SetString(PyExc_TypeError, "index() takes no keyword arguments");
+        return nullptr;
+    }
 
     auto clamp_bound = [&](PyObject* ob, Py_ssize_t& value) {
         value = PyNumber_AsSsize_t(ob, PyExc_OverflowError);
@@ -939,21 +1015,20 @@ PyObject* index(PyObject* _self, PyObject* args) {
         return false;
     };
 
-    Py_ssize_t nargs = PyTuple_GET_SIZE(args);
     if (!nargs) {
         PyErr_SetString(PyExc_TypeError, "index() takes at least 1 argument (0 given)");
         return nullptr;
     }
     if (nargs >= 1) {
-        value = PyTuple_GET_ITEM(args, 0);
+        value = args[0];
     }
     if (nargs >= 2) {
-        if (clamp_bound(PyTuple_GET_ITEM(args, 1), start)) {
+        if (clamp_bound(args[1], start)) {
             return nullptr;
         }
     }
     if (nargs >= 3) {
-        if (clamp_bound(PyTuple_GET_ITEM(args, 2), stop)) {
+        if (clamp_bound(args[2], stop)) {
             return nullptr;
         }
     }
@@ -975,21 +1050,28 @@ PyObject* index(PyObject* _self, PyObject* args) {
     return PyLong_FromSsize_t(ix);
 }
 
-PyMethodDef index_method = {"index", index, METH_VARARGS, index_doc};
+PyMethodDef index_method = {"index",
+                            unsafe_cast_to_pycfunction(index),
+                            METH_FASTCALL,
+                            index_doc};
 
 PyDoc_STRVAR(insert_doc, "Insert object before index into self.");
 
-PyObject* insert(PyObject* _self, PyObject* args) {
+PyObject* insert(PyObject* _self, PyObject** args, int nargs, PyObject* kwargs) {
     jlist& self = *reinterpret_cast<jlist*>(_self);
 
-    if (PyTuple_GET_SIZE(args) != 2) {
+    if (kwargs && PyDict_Size(kwargs)) {
+        PyErr_SetString(PyExc_TypeError, "insert() takes no keyword arguments");
+    }
+
+    if (nargs != 2) {
         PyErr_Format(PyExc_TypeError,
                      "jlist.insert expects exactly 2 arguments, got: %zd",
                      PyTuple_GET_SIZE(args));
         return nullptr;
     }
-    PyObject* index_ob = PyTuple_GET_ITEM(args, 0);
-    PyObject* value = PyTuple_GET_ITEM(args, 1);
+    PyObject* index_ob = args[0];
+    PyObject* value = args[1];
 
     Py_ssize_t index = PyNumber_AsSsize_t(index_ob, PyExc_IndexError);
     if (index == -1 && PyErr_Occurred()) {
@@ -1009,20 +1091,26 @@ PyObject* insert(PyObject* _self, PyObject* args) {
     Py_RETURN_NONE;
 }
 
-PyMethodDef insert_method = {"insert", insert, METH_VARARGS, insert_doc};
+PyMethodDef insert_method = {"insert",
+                             unsafe_cast_to_pycfunction(insert),
+                             METH_FASTCALL,
+                             insert_doc};
 
 PyDoc_STRVAR(pop_doc, "Remove and return item at index (default last).");
 
-PyObject* pop(PyObject* _self, PyObject* args) {
+PyObject* pop(PyObject* _self, PyObject** args, int nargs, PyObject* kwargs) {
     jlist& self = *reinterpret_cast<jlist*>(_self);
 
-    Py_ssize_t nargs = PyTuple_GET_SIZE(args);
+    if (kwargs && PyDict_Size(kwargs)) {
+        PyErr_SetString(PyExc_TypeError, "pop() takes no keyword arguments");
+    }
+
     Py_ssize_t ix = 0;
     if (nargs == 0) {
         ix = self.size() - 1;
     }
     else if (nargs == 1) {
-        ix = PyNumber_AsSsize_t(PyTuple_GET_ITEM(args, 0), PyExc_IndexError);
+        ix = PyNumber_AsSsize_t(args[0], PyExc_IndexError);
         if (ix == -1 && PyErr_Occurred()) {
             return nullptr;
         }
@@ -1066,7 +1154,7 @@ PyObject* pop(PyObject* _self, PyObject* args) {
     return out;
 }
 
-PyMethodDef pop_method = {"pop", pop, METH_VARARGS, pop_doc};
+PyMethodDef pop_method = {"pop", unsafe_cast_to_pycfunction(pop), METH_FASTCALL, pop_doc};
 
 PyDoc_STRVAR(remove_doc, "Remove first occurrence of value.");
 
@@ -1254,10 +1342,10 @@ bool sort_with_key(jlist& self, PyObject* key) {
 }
 }  // namespace detail
 
-PyObject* sort(PyObject* _self, PyObject* args, PyObject* kwargs) {
+PyObject* sort(PyObject* _self, PyObject**, int nargs, PyObject* kwargs) {
     jlist& self = *reinterpret_cast<jlist*>(_self);
 
-    if (PyTuple_GET_SIZE(args)) {
+    if (nargs) {
         PyErr_SetString(PyExc_TypeError, "sort() takes no positional arguments");
         return nullptr;
     }
@@ -1269,6 +1357,11 @@ PyObject* sort(PyObject* _self, PyObject* args, PyObject* kwargs) {
     PyObject* key = nullptr;
     if (kwargs) {
         key = PyDict_GetItemString(kwargs, "key");
+        if (PyDict_Size(kwargs) != static_cast<bool>(key)) {
+            PyErr_SetString(PyExc_TypeError,
+                            "sort() only takes a \"key\" keyword argument");
+            return nullptr;
+        }
     }
 
     if (key) {
@@ -1285,7 +1378,7 @@ PyObject* sort(PyObject* _self, PyObject* args, PyObject* kwargs) {
 
 PyMethodDef sort_method = {"sort",
                            unsafe_cast_to_pycfunction(sort),
-                           METH_VARARGS | METH_KEYWORDS,
+                           METH_FASTCALL,
                            sort_doc};
 
 PyObject* reduce(PyObject* self, PyObject*) {
@@ -1303,6 +1396,8 @@ PyObject* reduce(PyObject* self, PyObject*) {
 PyMethodDef reduce_method = {"__reduce__", reduce, METH_NOARGS, nullptr};
 
 PyMethodDef methods[] = {
+    _from_starargs_method,
+    _reserve_method,
     append_method,
     clear_method,
     copy_method,
@@ -1850,7 +1945,7 @@ PyObject* get_tag(PyObject* _self, void*) {
     }
 }
 
-PyGetSetDef tag_getset = {"tag", get_tag, nullptr, tag_doc, nullptr};
+PyGetSetDef tag_getset = {const_cast<char*>("tag"), get_tag, nullptr, tag_doc, nullptr};
 
 PyGetSetDef getsets[] = {
     tag_getset,
@@ -2035,43 +2130,43 @@ PyTypeObject jlist_type = {
     // clang-format: off
     PyVarObject_HEAD_INIT(&PyType_Type, 0)
     // clang-format: on
-    "jlist.jlist",                            // tp_name
-    sizeof(jlist),                            // tp_basicsize
-    0,                                        // tp_itemsize
-    methods::deallocate,                      // tp_dealloc
-    0,                                        // tp_print
-    0,                                        // tp_getattr
-    0,                                        // tp_setattr
-    0,                                        // tp_reserved
-    methods::repr,                            // tp_repr
-    0,                                        // tp_as_number
-    &methods::sq_methods,                     // tp_as_sequence
-    &methods::as_mapping,                     // tp_as_mapping
-    0,                                        // tp_hash
-    0,                                        // tp_call
-    0,                                        // tp_str
-    0,                                        // tp_getattro
-    0,                                        // tp_setattro
-    0,                                        // tp_as_buffer
-    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC,  // tp_flags
-    0,                                        // tp_doc
-    methods::traverse,                        // tp_traverse
-    methods::gc_clear,                        // tp_clear
-    methods::richcompare,                     // tp_richcompare
-    0,                                        // tp_weaklistoffset
-    methods::iter,                            // tp_iter
-    0,                                        // tp_iternext
-    methods::methods,                         // tp_methods,
-    0,                                        // tp_members
-    methods::getsets,                         // tp_getset
-    0,                                        // tp_base
-    0,                                        // tp_dict
-    0,                                        // tp_descr_get
-    0,                                        // tp_descr_set
-    0,                                        // tp_dictoffset
-    methods::init,                            // tp_init
-    0,                                        // tp_alloc
-    methods::new_,                            // tp_new
+    "jlist.jlist",                                                  // tp_name
+    sizeof(jlist),                                                  // tp_basicsize
+    0,                                                              // tp_itemsize
+    methods::deallocate,                                            // tp_dealloc
+    0,                                                              // tp_print
+    0,                                                              // tp_getattr
+    0,                                                              // tp_setattr
+    0,                                                              // tp_reserved
+    methods::repr,                                                  // tp_repr
+    0,                                                              // tp_as_number
+    &methods::sq_methods,                                           // tp_as_sequence
+    &methods::as_mapping,                                           // tp_as_mapping
+    0,                                                              // tp_hash
+    0,                                                              // tp_call
+    0,                                                              // tp_str
+    0,                                                              // tp_getattro
+    0,                                                              // tp_setattro
+    0,                                                              // tp_as_buffer
+    Py_TPFLAGS_DEFAULT | Py_TPFLAGS_HAVE_GC | Py_TPFLAGS_BASETYPE,  // tp_flags
+    0,                                                              // tp_doc
+    methods::traverse,                                              // tp_traverse
+    methods::gc_clear,                                              // tp_clear
+    methods::richcompare,                                           // tp_richcompare
+    0,                                                              // tp_weaklistoffset
+    methods::iter,                                                  // tp_iter
+    0,                                                              // tp_iternext
+    methods::methods,                                               // tp_methods,
+    0,                                                              // tp_members
+    methods::getsets,                                               // tp_getset
+    0,                                                              // tp_base
+    0,                                                              // tp_dict
+    0,                                                              // tp_descr_get
+    0,                                                              // tp_descr_set
+    0,                                                              // tp_dictoffset
+    methods::init,                                                  // tp_init
+    0,                                                              // tp_alloc
+    methods::new_,                                                  // tp_new
 };
 
 PyModuleDef module = {
