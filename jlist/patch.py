@@ -223,9 +223,9 @@ else:
         >>> patch_literals()
 
         >>> [1, 2, 3]
-        >>> jlist([1, 2, 3])
+        jlist([1, 2, 3])
         >>> [x for x in range(3)]
-        >>> jlist([1, 2, 3])
+        jlist([1, 2, 3])
         """
         import builtins
 
