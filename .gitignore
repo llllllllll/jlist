@@ -37,4 +37,6 @@ TAGS
 
 *.pyc
 
-venv/*
+venv*/*
+
+*.egg-info/*
