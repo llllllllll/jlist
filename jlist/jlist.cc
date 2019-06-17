@@ -11,6 +11,12 @@
 #include "jlist/jlist.h"
 #include "jlist/scope_guard.h"
 
+#if PY_MINOR_VERSION >= 7
+#define JL_FASTCALL_FLAGS (METH_FASTCALL | METH_KEYWORDS)
+#else
+#define JL_FASTCALL_FLAGS METH_FASTCALL
+#endif
+
 namespace jl {
 extern PyTypeObject jlist_type;
 
@@ -416,7 +422,7 @@ PyObject* _from_starargs(PyObject* _cls, PyObject** args, int nargs, PyObject*) 
 
 PyMethodDef _from_starargs_method = {"_from_starargs",
                                      unsafe_cast_to_pycfunction(_from_starargs),
-                                     METH_FASTCALL | METH_CLASS,
+                                     JL_FASTCALL_FLAGS | METH_CLASS,
                                      _from_starargs_doc};
 
 PyDoc_STRVAR(_reserve_doc,
@@ -1052,7 +1058,7 @@ PyObject* index(PyObject* _self, PyObject** args, int nargs, PyObject* kwnames) 
 
 PyMethodDef index_method = {"index",
                             unsafe_cast_to_pycfunction(index),
-                            METH_FASTCALL,
+                            JL_FASTCALL_FLAGS,
                             index_doc};
 
 PyDoc_STRVAR(insert_doc, "Insert object before index into self.");
@@ -1093,7 +1099,7 @@ PyObject* insert(PyObject* _self, PyObject** args, int nargs, PyObject* kwnames)
 
 PyMethodDef insert_method = {"insert",
                              unsafe_cast_to_pycfunction(insert),
-                             METH_FASTCALL,
+                             JL_FASTCALL_FLAGS,
                              insert_doc};
 
 PyDoc_STRVAR(pop_doc, "Remove and return item at index (default last).");
@@ -1154,7 +1160,7 @@ PyObject* pop(PyObject* _self, PyObject** args, int nargs, PyObject* kwnames) {
     return out;
 }
 
-PyMethodDef pop_method = {"pop", unsafe_cast_to_pycfunction(pop), METH_FASTCALL, pop_doc};
+PyMethodDef pop_method = {"pop", unsafe_cast_to_pycfunction(pop), JL_FASTCALL_FLAGS, pop_doc};
 
 PyDoc_STRVAR(remove_doc, "Remove first occurrence of value.");
 
@@ -1389,7 +1395,7 @@ PyObject* sort(PyObject* _self, PyObject** args, int nargs, PyObject* kwnames) {
 
 PyMethodDef sort_method = {"sort",
                            unsafe_cast_to_pycfunction(sort),
-                           METH_FASTCALL,
+                           JL_FASTCALL_FLAGS,
                            sort_doc};
 
 PyObject* reduce(PyObject* self, PyObject*) {
