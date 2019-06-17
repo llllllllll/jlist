@@ -165,7 +165,10 @@ bool box_and_extend(jlist& self, jlist& other) {
             return unwind();
         }
 
-        bool err = detail::setitem_helper(self, self.entries[original_size + ix++], boxed, false);
+        bool err = detail::setitem_helper(self,
+                                          self.entries[original_size + ix++],
+                                          boxed,
+                                          false);
         Py_DECREF(boxed);
         if (err) {
             return unwind();
@@ -397,10 +400,7 @@ PyObject* _from_starargs(PyObject* _cls, PyObject** args, int nargs, PyObject*) 
 
     self->entries.resize(nargs);
     for (Py_ssize_t ix = 0; ix < nargs; ++ix) {
-        if (detail::setitem_helper(*self,
-                                   self->entries[ix],
-                                   args[ix],
-                                   false)) {
+        if (detail::setitem_helper(*self, self->entries[ix], args[ix], false)) {
             if (self->boxed()) {
                 for (Py_ssize_t unwind_ix = 0; unwind_ix < ix; ++unwind_ix) {
                     Py_DECREF(self->entries[unwind_ix].as_ob);
@@ -976,13 +976,13 @@ Py_ssize_t index_helper(jlist& self,
 }
 }  // namespace detail
 
-PyObject* index(PyObject* _self, PyObject** args, int nargs, PyObject* kwargs) {
+PyObject* index(PyObject* _self, PyObject** args, int nargs, PyObject* kwnames) {
     jlist& self = *reinterpret_cast<jlist*>(_self);
     PyObject* value = nullptr;
     Py_ssize_t start = 0;
     Py_ssize_t stop = self.size();
 
-    if (kwargs && PyDict_Size(kwargs)) {
+    if (kwnames && PyTuple_GET_SIZE(kwnames)) {
         PyErr_SetString(PyExc_TypeError, "index() takes no keyword arguments");
         return nullptr;
     }
@@ -1057,10 +1057,10 @@ PyMethodDef index_method = {"index",
 
 PyDoc_STRVAR(insert_doc, "Insert object before index into self.");
 
-PyObject* insert(PyObject* _self, PyObject** args, int nargs, PyObject* kwargs) {
+PyObject* insert(PyObject* _self, PyObject** args, int nargs, PyObject* kwnames) {
     jlist& self = *reinterpret_cast<jlist*>(_self);
 
-    if (kwargs && PyDict_Size(kwargs)) {
+    if (kwnames && PyTuple_GET_SIZE(kwnames)) {
         PyErr_SetString(PyExc_TypeError, "insert() takes no keyword arguments");
     }
 
@@ -1098,10 +1098,10 @@ PyMethodDef insert_method = {"insert",
 
 PyDoc_STRVAR(pop_doc, "Remove and return item at index (default last).");
 
-PyObject* pop(PyObject* _self, PyObject** args, int nargs, PyObject* kwargs) {
+PyObject* pop(PyObject* _self, PyObject** args, int nargs, PyObject* kwnames) {
     jlist& self = *reinterpret_cast<jlist*>(_self);
 
-    if (kwargs && PyDict_Size(kwargs)) {
+    if (kwnames && PyTuple_GET_SIZE(kwnames)) {
         PyErr_SetString(PyExc_TypeError, "pop() takes no keyword arguments");
     }
 
@@ -1342,7 +1342,7 @@ bool sort_with_key(jlist& self, PyObject* key) {
 }
 }  // namespace detail
 
-PyObject* sort(PyObject* _self, PyObject**, int nargs, PyObject* kwargs) {
+PyObject* sort(PyObject* _self, PyObject** args, int nargs, PyObject* kwnames) {
     jlist& self = *reinterpret_cast<jlist*>(_self);
 
     if (nargs) {
@@ -1355,9 +1355,20 @@ PyObject* sort(PyObject* _self, PyObject**, int nargs, PyObject* kwargs) {
     }
 
     PyObject* key = nullptr;
-    if (kwargs) {
-        key = PyDict_GetItemString(kwargs, "key");
-        if (PyDict_Size(kwargs) != static_cast<bool>(key)) {
+    if (kwnames) {
+        if (PyTuple_GET_SIZE(kwnames) == 1) {
+            const char* data = PyUnicode_AsUTF8(PyTuple_GET_ITEM(kwnames, 0));
+            if (!data) {
+                return nullptr;
+            }
+            if (std::strncmp(data, "key", 3)) {
+                PyErr_SetString(PyExc_TypeError,
+                                "sort() only takes a \"key\" keyword argument");
+                return nullptr;
+            }
+            key = args[0];
+        }
+        else if (PyTuple_GET_SIZE(kwnames) > 1) {
             PyErr_SetString(PyExc_TypeError,
                             "sort() only takes a \"key\" keyword argument");
             return nullptr;
