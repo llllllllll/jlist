@@ -335,8 +335,8 @@ Patching
 
 ``jlist`` can be made to replace Python's builtin ``list`` object, either in
 particular function or globally. This behavior depends on the `codetransformer
-<https://github.com/llllllllll/codetransformer>`_, and is not installed nor
-enabled by default.
+<https://github.com/llllllllll/codetransformer>`_ module, and is not installed
+nor enabled by default.
 
 To make ``jlist`` replace ``list`` literals in a particular function,
 ``jlist.overloaded_literals`` may be used as a function decorator:
