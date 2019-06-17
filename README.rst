@@ -88,11 +88,14 @@ doesn't round trip through the Python iterator protocol:
    In [2]: %timeit list(range(10000000))
    337 ms ± 6.57 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
 
-   In [3]: %timeit jl.range(10000000)
+   In [3]: %timeit jl.jlist(range(10000000))
+   40.7 ms ± 146 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
+
+   In [4]: %timeit jl.range(10000000)
    40.3 ms ± 183 µs per loop (mean ± std. dev. of 7 runs, 10 loops each)
 
-   In [4]: %timeit jl.jlist(range(10000000))
-   329 ms ± 2.98 ms per loop (mean ± std. dev. of 7 runs, 1 loop each)
+
+``jl.range`` is purely a convenience when creating eager ranges.
 
 There is also a helper for creating a list of all zero, which exists only as a
 convenience over ``jl.jlist([0]) * n``:

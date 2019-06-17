@@ -297,6 +297,107 @@ bool extend_iterable(jlist& self, PyObject* other) {
     return PyErr_Occurred();
 }
 
+bool extend_range(jlist& self, PyObject* other) {
+    PyObject* start_ob = PyObject_GetAttrString(other, "start");
+    if (!start_ob) {
+        return true;
+    }
+    scope_guard start_sg([&] { Py_DECREF(start_ob); });
+
+    Py_ssize_t start = PyLong_AsSsize_t(start_ob);
+    if (start == -1) {
+        PyErr_Clear();
+        return extend_iterable(self, other);
+    }
+
+    PyObject* stop_ob = PyObject_GetAttrString(other, "stop");
+    if (!stop_ob) {
+        return true;
+    }
+    scope_guard stop_sg([&] { Py_DECREF(stop_ob); });
+
+    Py_ssize_t stop = PyLong_AsSsize_t(stop_ob);
+    if (stop == -1) {
+        PyErr_Clear();
+        return extend_iterable(self, other);
+    }
+
+    PyObject* step_ob = PyObject_GetAttrString(other, "step");
+    if (!step_ob) {
+        return true;
+    }
+    scope_guard step_sg([&] { Py_DECREF(step_ob); });
+
+    Py_ssize_t step = PyLong_AsSsize_t(step_ob);
+    if (step == -1) {
+        PyErr_Clear();
+        return extend_iterable(self, other);
+    }
+
+    auto compute_size =
+        [&](Py_ssize_t low, Py_ssize_t high, Py_ssize_t step) -> Py_ssize_t {
+        if (low >= high) {
+            return 0;
+        }
+
+        return (high - low - 1) / step + 1;
+    };
+
+    if (self.tag() == entry_tag::as_int || self.tag() == entry_tag::unset) {
+        self.tag(entry_tag::as_int);
+
+        auto fill = [&](Py_ssize_t size, auto cmp) {
+            Py_ssize_t out_ix = self.size();
+            self.entries.resize(out_ix + size);
+            for (Py_ssize_t ix = start; cmp(ix, stop); ix += step) {
+                self.entries[out_ix++].as_int = ix;
+            }
+        };
+
+        if (step > 0) {
+            fill(compute_size(start, stop, step), [](auto a, auto b) { return a < b; });
+        }
+        else {
+            fill(compute_size(stop, start, -step), [](auto a, auto b) { return a > b; });
+        }
+    }
+    else {
+        if (maybe_box_values(self)) {
+            return true;
+        }
+
+        auto fill = [&](Py_ssize_t size, auto cmp) {
+            Py_ssize_t original_size = self.size();
+            Py_ssize_t out_ix = original_size;
+            self.entries.resize(out_ix + size);
+            for (Py_ssize_t ix = start; cmp(ix, stop); ix += step) {
+                PyObject* tmp = PyLong_FromSsize_t(ix);
+                if (!tmp) {
+                    for (Py_ssize_t unwind_ix = 0; unwind_ix < ix; ++unwind_ix) {
+                        Py_DECREF(self.entries[unwind_ix].as_ob);
+                    }
+                    self.entries.erase(self.entries.begin() + original_size,
+                                       self.entries.end());
+                    return true;
+                }
+                self.entries[out_ix++].as_ob = tmp;
+            }
+            return false;
+        };
+
+        if (step > 0) {
+            return fill(compute_size(start, stop, step),
+                        [](auto a, auto b) { return a < b; });
+        }
+        else {
+            return fill(compute_size(stop, start, -step),
+                        [](auto a, auto b) { return a > b; });
+        }
+    }
+
+    return false;
+}
+
 bool extend_helper(jlist& self, PyObject* other) {
     if (Py_TYPE(other) == &jlist_type) {
         // fast path code when we know the rhs is also a jlist
@@ -305,6 +406,10 @@ bool extend_helper(jlist& self, PyObject* other) {
 
     if (PyList_CheckExact(other) || PyTuple_CheckExact(other)) {
         return extend_fast_sequence(self, other);
+    }
+
+    if (PyRange_Check(other)) {
+        return extend_range(self, other);
     }
 
     return extend_iterable(self, other);
@@ -1160,7 +1265,10 @@ PyObject* pop(PyObject* _self, PyObject** args, int nargs, PyObject* kwnames) {
     return out;
 }
 
-PyMethodDef pop_method = {"pop", unsafe_cast_to_pycfunction(pop), JL_FASTCALL_FLAGS, pop_doc};
+PyMethodDef pop_method = {"pop",
+                          unsafe_cast_to_pycfunction(pop),
+                          JL_FASTCALL_FLAGS,
+                          pop_doc};
 
 PyDoc_STRVAR(remove_doc, "Remove first occurrence of value.");
 
