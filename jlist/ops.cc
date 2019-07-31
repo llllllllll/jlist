@@ -298,6 +298,7 @@ struct sum<std::int64_t> {
             else {
                 result = intermediate_result;
             }
+            ++ix;
         }
 
         return PyLong_FromLongLong(result);
